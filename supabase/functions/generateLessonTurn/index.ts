@@ -19,31 +19,13 @@ serve(async (req) => {
 
     // Validate input
     if (!sessionId || !userMessage) {
-      return new Response(
-        JSON.stringify({ error: 'Session ID and user message are required' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response('Missing params', { status: 400 });
     }
 
-    // Create Supabase client with Auth context from request
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      return new Response(
-        JSON.stringify({ error: 'Missing Authorization header' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
+    // Create Supabase client with SERVICE_ROLE_KEY
     const supabaseClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      {
-        global: {
-          headers: {
-            Authorization: authHeader,
-          },
-        },
-      }
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
     // Check if session exists and belongs to the authenticated user
@@ -54,10 +36,7 @@ serve(async (req) => {
       .single();
 
     if (sessionError) {
-      return new Response(
-        JSON.stringify({ error: sessionError.message }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(sessionError.message ?? 'Server error', { status: 500 });
     }
 
     // Get user proficiency data from performance_analytics
@@ -105,10 +84,7 @@ serve(async (req) => {
       });
 
     if (userMessageError) {
-      return new Response(
-        JSON.stringify({ error: userMessageError.message }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(userMessageError.message ?? 'Server error', { status: 500 });
     }
 
     // Build conversation history for LLM context
@@ -179,10 +155,7 @@ serve(async (req) => {
     const openaiData = await openaiResponse.json();
     
     if (!openaiResponse.ok) {
-      return new Response(
-        JSON.stringify({ error: 'Error generating AI response', details: openaiData }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(openaiData.error?.message ?? 'Server error', { status: 500 });
     }
 
     const aiMessage = openaiData.choices[0].message.content;
@@ -215,24 +188,14 @@ serve(async (req) => {
       });
 
     if (aiMessageError) {
-      return new Response(
-        JSON.stringify({ error: aiMessageError.message }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(aiMessageError.message ?? 'Server error', { status: 500 });
     }
 
     // Return the AI message along with session status
-    return new Response(
-      JSON.stringify({ 
-        aiMessage: cleanedMessage,
-        status: status
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-  } catch (error) {
-    return new Response(
-      JSON.stringify({ error: error.message }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return new Response(JSON.stringify({ aiMessage: cleanedMessage }), {
+      headers: { 'Content-Type': 'application/json' }
+    });
+  } catch (err) {
+    return new Response(err.message ?? 'Server error', { status: 500 });
   }
 });

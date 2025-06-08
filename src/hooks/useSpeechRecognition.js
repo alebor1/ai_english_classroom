@@ -5,18 +5,18 @@ import { useState, useEffect, useCallback, useRef } from 'react';
  * Custom hook for speech recognition using Web Speech API
  * @param {Object} options - Configuration options
  * @param {string} options.language - Recognition language (default: 'en-US')
- * @param {boolean} options.continuous - Whether recognition should continue after results (default: false)
+ * @param {boolean} options.continuous - Whether recognition should continue after results (default: true)
  * @param {boolean} options.interimResults - Whether to return interim results (default: true)
  * @returns {Object} - Speech recognition controls and state
  */
 const useSpeechRecognition = (options = {}) => {
   const {
     language = localStorage.getItem('speech-recognition-language') || 'en-US',
-    continuous = false,
+    continuous = true, // Set continuous to true by default
     interimResults = true,
   } = options;
 
-  const [text, setText] = useState('');
+  const [transcript, setTranscript] = useState('');
   const [listening, setListening] = useState(false);
   const [error, setError] = useState(null);
   const [supported, setSupported] = useState(true);
@@ -41,11 +41,11 @@ const useSpeechRecognition = (options = {}) => {
 
     // Configure event handlers
     recognitionRef.current.onresult = (event) => {
-      const transcript = Array.from(event.results)
+      const result = Array.from(event.results)
         .map(result => result[0].transcript)
         .join('');
       
-      setText(transcript);
+      setTranscript(result);
     };
 
     recognitionRef.current.onerror = (event) => {
@@ -81,7 +81,6 @@ const useSpeechRecognition = (options = {}) => {
   // Start recognition
   const start = useCallback(() => {
     if (!supported) return;
-    setText('');
     setError(null);
     
     try {
@@ -109,19 +108,19 @@ const useSpeechRecognition = (options = {}) => {
   }, [supported]);
 
   // Reset recognition and text
-  const reset = useCallback(() => {
-    setText('');
+  const resetTranscript = useCallback(() => {
+    setTranscript('');
     setError(null);
   }, []);
 
   return {
-    text,
+    transcript,
     listening,
     supported,
     error,
     start,
     stop,
-    reset,
+    resetTranscript,
   };
 };
 

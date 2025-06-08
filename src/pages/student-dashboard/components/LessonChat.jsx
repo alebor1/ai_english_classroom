@@ -6,6 +6,7 @@ import Icon from 'components/AppIcon';
 import useSpeechRecognition from 'hooks/useSpeechRecognition';
 import useTextToSpeech from 'hooks/useTextToSpeech';
 import { useSupabase } from 'context/SupabaseContext';
+import { askAI } from 'lib/askAI';
 
 const LessonChat = () => {
   const navigate = useNavigate();
@@ -14,7 +15,6 @@ const LessonChat = () => {
   const { 
     getLessonSessionById,
     getLessonMessages,
-    generateLessonTurn,
     updateLessonSessionStatus,
     user,
     initialized
@@ -24,7 +24,6 @@ const LessonChat = () => {
   const [session, setSession] = useState(null);
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
-  const [pendingText, setPendingText] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -32,21 +31,21 @@ const LessonChat = () => {
   const [showEndLessonMenu, setShowEndLessonMenu] = useState(false);
   
   // Refs
-  const messagesEndRef = useRef(null);
+  const listRef = useRef(null);
   const inputRef = useRef(null);
 
   // Speech recognition hook
   const { 
-    text: recognizedText, 
+    transcript, 
     listening, 
     supported: speechRecognitionSupported,
-    start: startListening, 
-    stop: stopListening,
-    reset: resetSpeech
+    start, 
+    stop,
+    resetTranscript
   } = useSpeechRecognition();
 
   // Text-to-speech hook
-  const { play, speaking } = useTextToSpeech();
+  const { play } = useTextToSpeech();
 
   // Route guard and session validation
   useEffect(() => {
@@ -148,9 +147,8 @@ const LessonChat = () => {
         const messagesData = await getLessonMessages(sessionId);
         const formattedMessages = messagesData?.map(msg => ({
           id: msg?.id,
-          text: msg?.content,
           role: msg?.role,
-          timestamp: msg?.created_at,
+          content: msg?.content,
         })) || [];
         
         setMessages(formattedMessages);
@@ -169,14 +167,14 @@ const LessonChat = () => {
 
   // Update input field when speech is recognized
   useEffect(() => {
-    if (recognizedText) {
-      setPendingText(recognizedText);
+    if (transcript) {
+      setInputText(transcript);
     }
-  }, [recognizedText]);
+  }, [transcript]);
 
   // Auto-scroll to newest message
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    listRef.current?.scrollTo(0, listRef.current.scrollHeight);
   }, [messages]);
 
   // Check for lesson completion based on message count threshold
@@ -214,68 +212,50 @@ const LessonChat = () => {
     }
   }, [lessonCompleted, navigate]);
 
+  // Toast Error helper
+  const toastError = (message) => {
+    setError(message);
+  };
+
+  // Send message function
+  const sendMessage = async (text) => {
+    const tmpId = crypto.randomUUID();
+    setMessages(m => [...m, { id: tmpId, role: 'user', content: text }]);
+    try {
+      const ai = await askAI(sessionId, text);
+      setMessages(m => [
+        ...m.filter(msg => msg.id !== tmpId),
+        { id: crypto.randomUUID(), role: 'user', content: text },
+        { id: crypto.randomUUID(), role: 'ai', content: ai }
+      ]);
+      await play(ai);
+    } catch (err) { 
+      toastError(err.message); 
+    }
+  };
+
   // Handle microphone toggle
   const handleMicToggle = () => {
     if (listening) {
-      stopListening();
-      if (pendingText) {
-        setInputText(pendingText);
-        setPendingText('');
-        resetSpeech();
-      }
+      stop();
     } else {
-      setPendingText('');
-      resetSpeech();
-      startListening();
+      resetTranscript();
+      start();
     }
   };
 
   // Handle send message
   const handleSend = async () => {
-    const messageText = inputText.trim() || pendingText.trim();
+    const messageText = inputText.trim();
     if (!messageText || !sessionId) return;
 
-    const userMessage = {
-      id: `temp-${Date.now()}`,
-      text: messageText,
-      role: 'user',
-      timestamp: new Date().toISOString(),
-    };
-
-    setMessages(prev => [...prev, userMessage]);
     setInputText('');
-    setPendingText('');
-    resetSpeech();
+    resetTranscript();
     setIsProcessing(true);
     setError(null);
 
     try {
-      const response = await generateLessonTurn(sessionId, messageText);
-      
-      if (response?.aiMessage) {
-        const aiMessage = {
-          id: `ai-${Date.now()}`,
-          text: response.aiMessage,
-          role: 'ai',
-          timestamp: new Date().toISOString(),
-        };
-
-        setMessages(prev => [...prev, aiMessage]);
-        
-        try {
-          await play(response.aiMessage);
-        } catch (ttsError) {
-          console.warn('TTS playback failed:', ttsError);
-        }
-        
-        if (response.status === 'completed') {
-          setLessonCompleted(true);
-        }
-      }
-    } catch (err) {
-      console.error('Error generating lesson turn:', err);
-      setError(err?.message || 'Failed to generate AI response');
-      setMessages(prev => prev.filter(msg => msg.id !== userMessage.id));
+      await sendMessage(messageText);
     } finally {
       setIsProcessing(false);
     }
@@ -286,15 +266,6 @@ const LessonChat = () => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
-    }
-  };
-
-  // Handle bubble click to replay TTS
-  const handleBubbleClick = (message) => {
-    if (message?.role === 'ai' && message?.text) {
-      play(message.text).catch(err => {
-        console.warn('TTS replay failed:', err);
-      });
     }
   };
 
@@ -360,8 +331,7 @@ const LessonChat = () => {
   const displayLevel = session?.level || 'Intermediate';
 
   return (
-    <div className="flex flex-col h-screen bg-background">
-      {/* Fixed Header */}
+    <div className="flex flex-col h-full">
       <div className="bg-surface shadow-sm border-b border-border px-4 py-3 flex-shrink-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center min-w-0 flex-1">
@@ -440,115 +410,33 @@ const LessonChat = () => {
         )}
       </div>
 
-      {/* Scrollable Message List */}
-      <div className="flex-grow overflow-y-auto p-4 space-y-4">
-        {messages?.length === 0 && (
-          <div className="text-center py-8">
-            <Icon name="MessageSquare" size={48} className="text-text-secondary mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-text-primary mb-2">Start Your Conversation</h3>
-            <p className="text-text-secondary">Type a message or use the microphone to begin practicing English!</p>
-          </div>
-        )}
-        
-        {messages?.map((message) => (
-          <div 
-            key={message?.id} 
-            className={`flex ${message?.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
-            <div 
-              className={`max-w-[80%] rounded-lg p-3 cursor-pointer transition-all duration-200 hover:shadow-md ${
-                message?.role === 'user' ?'bg-primary text-white rounded-br-none' :'bg-surface border border-border rounded-bl-none shadow-sm hover:bg-background'
-              }`}
-              onClick={() => handleBubbleClick(message)}
-            >
-              <p className="whitespace-pre-wrap">{message?.text}</p>
-              <div className={`text-xs mt-1 text-right ${
-                message?.role === 'user' ? 'text-primary-100' : 'text-text-secondary'
-              }`}>
-                {message?.timestamp ? new Date(message.timestamp).toLocaleTimeString([], { 
-                  hour: '2-digit', 
-                  minute: '2-digit' 
-                }) : ''}
-              </div>
-            </div>
-          </div>
+      <div ref={listRef} className="flex-1 overflow-y-auto flex flex-col gap-4 px-4 py-6">
+        {messages.map(m => (
+          <p key={m.id}
+             className={`max-w-xs rounded-3xl px-4 py-2 text-sm
+               ${m.role==='user' ?'self-end bg-primary text-white' :'self-start bg-muted/20 text-muted-foreground'}`}>
+             {m.content}
+          </p>
         ))}
-        
-        {/* Loading Spinner for AI Response */}
-        {isProcessing && (
-          <div className="flex justify-start">
-            <div className="bg-surface border border-border rounded-lg rounded-bl-none p-3 shadow-sm max-w-[80%]">
-              <div className="flex space-x-2 items-center">
-                <div className="w-2 h-2 rounded-full bg-text-secondary animate-pulse"></div>
-                <div className="w-2 h-2 rounded-full bg-text-secondary animate-pulse delay-75"></div>
-                <div className="w-2 h-2 rounded-full bg-text-secondary animate-pulse delay-150"></div>
-                <span className="text-sm text-text-secondary ml-2">AI is typing...</span>
-              </div>
-            </div>
-          </div>
-        )}
-        
-        <div ref={messagesEndRef} />
       </div>
 
-      {/* Footer with Input */}
-      <div className="bg-surface border-t border-border p-4 flex-shrink-0">
-        <div className="flex items-end space-x-2">
-          <div className="flex-grow relative">
-            <textarea
-              ref={inputRef}
-              className="w-full border border-border rounded-lg p-3 pr-10 resize-none focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary bg-surface text-text-primary placeholder-text-secondary"
-              placeholder={speechRecognitionSupported ? "Type or speak your message..." : "Type your message..."}
-              value={listening ? pendingText : inputText}
-              onChange={(e) => {
-                if (!listening) {
-                  setInputText(e.target.value);
-                }
-              }}
-              onKeyDown={handleKeyDown}
-              rows={2}
-              disabled={listening || lessonCompleted}
-            />
-            
-            {/* Speaking indicator */}
-            {speaking && (
-              <div className="absolute right-3 bottom-3 text-primary">
-                <Icon name="Volume2" className="animate-pulse" size={20} />
-              </div>
-            )}
-          </div>
-          
-          {/* Microphone button */}
-          {speechRecognitionSupported && (
-            <Button
-              onClick={handleMicToggle}
-              variant={listening ? "error" : "outline"}
-              className={`h-12 w-12 rounded-full p-0 flex items-center justify-center transition-all duration-200 ${
-                listening ? 'shadow-lg shadow-error/25 animate-pulse' : ''
-              }`}
-              iconName={listening ? "MicOff" : "Mic"}
-              title={listening ? "Stop listening" : "Start listening"}
-              disabled={isProcessing || lessonCompleted}
-            />
-          )}
-          
-          {/* Send button */}
-          <Button
-            onClick={handleSend}
-            className="h-12 w-12 rounded-full p-0 flex items-center justify-center"
-            disabled={(!inputText.trim() && !pendingText.trim()) || isProcessing || lessonCompleted}
-            iconName="Send"
-            title="Send message"
+      <footer className="p-4">
+        <div className="relative">
+          <input 
+            ref={inputRef}
+            className="w-full border rounded-full px-4 py-3 pr-14"
+            placeholder={speechRecognitionSupported ? "Type or speak your message..." : "Type your message..."}
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={isProcessing || lessonCompleted}
           />
+          <button
+             onClick={listening ? stop : start}
+             className="absolute right-3 top-1/2 -translate-y-1/2 z-50">
+            <Icon name={listening?'Mic':'MicOff'} size={20}/>
+          </button>
         </div>
-        
-        {/* Recording indicator */}
-        {listening && (
-          <div className="mt-2 text-xs text-primary flex items-center">
-            <span className="animate-pulse mr-1 w-2 h-2 bg-primary rounded-full"></span>
-            <span>Listening... Tap the microphone again to stop and send</span>
-          </div>
-        )}
         
         {/* Error display */}
         {error && (
@@ -563,15 +451,7 @@ const LessonChat = () => {
             </button>
           </div>
         )}
-      </div>
-      
-      {/* Click outside handler for end lesson menu */}
-      {showEndLessonMenu && (
-        <div 
-          className="fixed inset-0 z-5"
-          onClick={() => setShowEndLessonMenu(false)}
-        />
-      )}
+      </footer>
     </div>
   );
 };
